@@ -28,6 +28,52 @@ export default function Home() {
     facingMode: "environment" as const,
   };
 
+  /**
+   * Pre-process image: convert to grayscale + increase contrast
+   * This makes text sharper and easier for Tesseract to read.
+   */
+  const preprocessImage = (imageSrc: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas 2D context not available')); return; }
+
+      const img = document.createElement('img') as HTMLImageElement;
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+
+        // Draw original image
+        ctx.drawImage(img, 0, 0);
+
+        // Get pixel data
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+
+        // Convert to grayscale + increase contrast
+        for (let i = 0; i < data.length; i += 4) {
+          // Grayscale (luminance formula)
+          const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+
+          // Increase contrast (simple linear stretch)
+          const contrast = 1.5;
+          const adjusted = Math.min(255, Math.max(0, contrast * (gray - 128) + 128));
+
+          data[i] = adjusted;     // R
+          data[i + 1] = adjusted; // G
+          data[i + 2] = adjusted; // B
+          // Alpha unchanged
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = imageSrc;
+      img.onerror = () => reject(new Error('Failed to load image for preprocessing'));
+    });
+  };
+
   const captureAndScan = async () => {
     try {
       if (!webcamRef.current) return;
@@ -40,18 +86,33 @@ export default function Home() {
 
       setCapturedImage(imageSrc);
       setLoading(true);
+      setStatus("AI Preprocessing Image...");
+
+      // Step 1: Pre-process image (grayscale + contrast boost)
+      const processedImage = await preprocessImage(imageSrc);
+
       setStatus("AI Scanning...");
 
-      const { data: { text } } = await Tesseract.recognize(imageSrc, 'eng', {
-        logger: (m) => { if (m.status === 'recognizing text') console.log('OCR progress:', Math.round(m.progress * 100) + '%'); }
+      // Step 2: OCR with whitelist (only A-Z, 0-9, space)
+      const { data: { text } } = await Tesseract.recognize(processedImage, 'eng', {
+        // @ts-expect-error - tessedit_char_whitelist is a valid Tesseract.js option not in TS types
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            console.log('OCR progress:', Math.round(m.progress * 100) + '%');
+          }
+        },
       });
 
       console.log('Raw OCR text:', text);
       setRawOcrText(text.trim());
 
-      // Extract container number: pattern = 4 letters + 6-7 digits (e.g., MSKU1234567)
-      const containerMatch = text.toUpperCase().match(/[A-Z]{4}\s*[0-9]{6,7}/);
-      const detectedContainer = containerMatch ? containerMatch[0].replace(/\s/g, '') : "";
+      // Step 3: Extract container number — EXACT format: 4 letters + 7 digits (ISO 6346)
+      // Examples: MSKU1234567, TCLU9876543, CMAU1122334
+      const containerMatch = text.toUpperCase().match(/([A-Z]{4})(\s*)(\d{7})/);
+      const detectedContainer = containerMatch
+        ? containerMatch[1] + containerMatch[3] // Join letters+digits, skip space
+        : "";
 
       // Extract truck number: look for patterns like TRK-1234, TRUCK 5678, or standalone number sequences
       // Common truck number formats: numbers with optional prefix/suffix
@@ -185,7 +246,7 @@ export default function Home() {
                 />
               </div>
               <div>
-                <label className="text-[10px] text-slate-400 uppercase font-black mb-1 block ml-1">Detected No.</label>
+                <label className="text-[10px] text-slate-400 uppercase font-black mb-1 block ml-1">Container No.</label>
                 <input
                   type="text"
                   value={containerNo}
