@@ -13,6 +13,7 @@ export default function Home() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [containerNo, setContainerNo] = useState<string>("");
   const [truckNo, setTruckNo] = useState<string>("");
+  const [rawOcrText, setRawOcrText] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Ready");
   const [isClient, setIsClient] = useState<boolean>(false);
@@ -41,11 +42,43 @@ export default function Home() {
       setLoading(true);
       setStatus("AI Scanning...");
 
-      const { data: { text } } = await Tesseract.recognize(imageSrc, 'eng');
+      const { data: { text } } = await Tesseract.recognize(imageSrc, 'eng', {
+        logger: (m) => { if (m.status === 'recognizing text') console.log('OCR progress:', Math.round(m.progress * 100) + '%'); }
+      });
 
-      const cleanedText = text.replace(/[^A-Z0-9]/g, "").toUpperCase();
-      setContainerNo(cleanedText || "NOT DETECTED");
-      setStatus("Scan Complete");
+      console.log('Raw OCR text:', text);
+      setRawOcrText(text.trim());
+
+      // Extract container number: pattern = 4 letters + 6-7 digits (e.g., MSKU1234567)
+      const containerMatch = text.toUpperCase().match(/[A-Z]{4}\s*[0-9]{6,7}/);
+      const detectedContainer = containerMatch ? containerMatch[0].replace(/\s/g, '') : "";
+
+      // Extract truck number: look for patterns like TRK-1234, TRUCK 5678, or standalone number sequences
+      // Common truck number formats: numbers with optional prefix/suffix
+      const truckPatterns = [
+        /(?:TRUCK|TRK|TKR?|VEHICLE|VEH)[\s\-:]*([A-Z0-9]{3,10})/i,
+        /(?:REG|REGN|PLATE|NO)[\s\-:]*([A-Z0-9]{3,10})/i,
+        /([A-Z]{2,3}\s?\d{2,4}\s?[A-Z]{1,3})/,  // License plate format (e.g., AB 12 CD)
+      ];
+
+      let detectedTruck = "";
+      for (const pattern of truckPatterns) {
+        const match = pattern.exec(text);
+        if (match) {
+          detectedTruck = (match[1] || match[0]).replace(/\s+/g, ' ').trim();
+          break;
+        }
+      }
+
+      // Fallback: if no truck pattern found, grab the first standalone number sequence
+      if (!detectedTruck) {
+        const numberMatch = text.match(/\b\d{3,}\b/);
+        if (numberMatch) detectedTruck = numberMatch[0];
+      }
+
+      setContainerNo(detectedContainer || "NOT DETECTED");
+      setTruckNo(detectedTruck || "");
+      setStatus(detectedContainer ? "Scan Complete — Review & Edit" : "Scan Complete — Edit Required");
     } catch (err) {
       console.error("OCR Error:", err);
       setStatus("Scan Failed");
@@ -87,6 +120,7 @@ export default function Home() {
     setCapturedImage(null);
     setContainerNo("");
     setTruckNo("");
+    setRawOcrText("");
     setStatus("Ready");
   };
 
@@ -170,6 +204,18 @@ export default function Home() {
               </button>
             </div>
           </div>
+        )}
+
+        {/* Debug: Raw OCR Output */}
+        {rawOcrText && (
+          <details className="w-full max-w-md bg-slate-900/50 rounded-xl border border-slate-800 overflow-hidden">
+            <summary className="p-3 text-[10px] text-slate-500 uppercase font-bold cursor-pointer select-none hover:bg-slate-800/50 transition-colors">
+              🔍 Debug: Raw OCR Text ({rawOcrText.length} chars)
+            </summary>
+            <pre className="p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+              {rawOcrText}
+            </pre>
+          </details>
         )}
         
         <div className="flex items-center justify-center gap-2 bg-slate-900/50 py-2 px-4 rounded-full w-fit mx-auto border border-slate-800 mt-4">
